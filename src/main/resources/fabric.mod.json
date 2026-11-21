@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ecpisdlc",
+  "version": "${version}",
+  "name": "EcpisDLC",
+  "description": "Client-only Minecraft 1.21.11 mod with a custom AWT overlay and HVH utilities.",
+  "authors": ["EcpisDLC"],
+  "license": "All-Rights-Reserved",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.ecpis.ecpisdlc.EcpisDLCClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
