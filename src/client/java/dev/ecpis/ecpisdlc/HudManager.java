@@ -11,6 +11,9 @@ import net.minecraft.world.item.ItemStack;
 
 import java.awt.Rectangle;
 import java.awt.Shape;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.awt.geom.Area;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -44,6 +47,12 @@ public final class HudManager {
     private HudElement dragging;
     private int dragOffsetX;
     private int dragOffsetY;
+    private long renderRevision;
+    private BufferedImage renderedFrame;
+    private long renderedRevision = -1;
+    private int renderedWidth;
+    private int renderedHeight;
+    private boolean renderedLightTheme;
 
     public HudManager() {
         elements.put(targetHud.id(), targetHud);
@@ -73,6 +82,7 @@ public final class HudManager {
         HudElement element = elements.get(id);
         if (element == null || element.isEnabled() == enabled) return;
         element.setEnabled(enabled);
+        invalidateRender();
         saveConfig();
     }
 
@@ -84,24 +94,35 @@ public final class HudManager {
 
     public void setModuleEnabledStates(Map<String, Boolean> states) {
         states.forEach(this::setModuleEnabled);
+        invalidateRender();
     }
 
     public void setMasterEnabled(boolean enabled) {
         if (moduleEnabled == enabled) return;
         moduleEnabled = enabled;
         hudModule.setEnabled(enabled);
+        invalidateRender();
         saveConfig();
     }
 
-    public void setManualEditMode(boolean enabled) { manualEditMode = enabled; }
-    public void toggleManualEditMode() { manualEditMode = !manualEditMode; }
+    public void setManualEditMode(boolean enabled) {
+        manualEditMode = enabled;
+        invalidateRender();
+    }
+
+    public void toggleManualEditMode() {
+        manualEditMode = !manualEditMode;
+        invalidateRender();
+    }
 
     public void notify(String message) {
         notificationHud.push(message);
+        invalidateRender();
     }
 
     public void onEntityAttack(Player attacker, Entity target) {
         targetHud.onAttack(attacker, target);
+        invalidateRender();
     }
 
     public void tick(Minecraft client) {
@@ -117,6 +138,7 @@ public final class HudManager {
             updatePlayerData(player);
         }
         for (HudElement element : elements.values()) element.onTick();
+        invalidateRender();
     }
 
     private void updatePlayerData(Player player) {
@@ -158,13 +180,36 @@ public final class HudManager {
     }
 
     public void setViewport(int width, int height) {
-        viewportWidth = Math.max(1, width);
-        viewportHeight = Math.max(1, height);
+        int safeWidth = Math.max(1, width);
+        int safeHeight = Math.max(1, height);
+        if (viewportWidth != safeWidth || viewportHeight != safeHeight) invalidateRender();
+        viewportWidth = safeWidth;
+        viewportHeight = safeHeight;
         for (HudElement element : elements.values()) {
             int maxX = Math.max(0, viewportWidth - element.width());
             int maxY = Math.max(0, viewportHeight - element.height());
             element.setPosition(Math.max(0, Math.min(maxX, element.x())), Math.max(0, Math.min(maxY, element.y())));
         }
+    }
+
+    public BufferedImage renderFrame(int width, int height, boolean lightTheme) {
+        setViewport(width, height);
+        if (renderedFrame != null && renderedRevision == renderRevision && renderedWidth == width
+                && renderedHeight == height && renderedLightTheme == lightTheme) {
+            return renderedFrame;
+        }
+        BufferedImage frame = new BufferedImage(Math.max(1, width), Math.max(1, height), BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = frame.createGraphics();
+        graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        render(graphics, width, height, lightTheme);
+        graphics.dispose();
+        renderedFrame = frame;
+        renderedRevision = renderRevision;
+        renderedWidth = width;
+        renderedHeight = height;
+        renderedLightTheme = lightTheme;
+        return frame;
     }
 
     public void render(java.awt.Graphics2D graphics, int width, int height, boolean lightTheme) {
@@ -180,6 +225,11 @@ public final class HudManager {
                         element.height() + 6, 14, renderer.accentColor(), 1.2f);
             }
         }
+    }
+
+    private void invalidateRender() {
+        renderRevision++;
+        renderedFrame = null;
     }
 
     public Shape windowShape(int width, int height) {
@@ -221,11 +271,13 @@ public final class HudManager {
         nextX = Math.max(0, Math.min(viewportWidth - dragging.width(), nextX));
         nextY = Math.max(0, Math.min(viewportHeight - dragging.height(), nextY));
         dragging.setPosition(nextX, nextY);
+        invalidateRender();
     }
 
     public void endDrag() {
         if (dragging == null) return;
         dragging = null;
+        invalidateRender();
         saveConfig();
     }
 

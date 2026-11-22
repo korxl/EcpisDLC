@@ -1,10 +1,13 @@
 package dev.ecpis.ecpisdlc;
 
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import org.lwjgl.glfw.GLFW;
+
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.UIManager;
-import javax.swing.JWindow;
 import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -17,12 +20,14 @@ import java.awt.Graphics2D;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.event.KeyAdapter;
+import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
 import java.awt.geom.RoundRectangle2D;
+import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -64,7 +69,6 @@ final class NativeOverlay {
     private volatile int gameWidth = 1280;
     private volatile int gameHeight = 720;
     private volatile boolean tabletVisible;
-    private volatile boolean focusRequested;
     private volatile boolean disposed;
     private volatile boolean closing;
     private volatile float animationProgress = 1.0f;
@@ -72,7 +76,7 @@ final class NativeOverlay {
     private volatile int tabletWidth;
     private volatile int tabletHeight;
     private Color accent;
-    private String themeId;
+    private volatile String themeId;
     private Timer animationTimer;
     private Timer contentAnimationTimer;
     private volatile Runnable closeAction = () -> { };
@@ -83,9 +87,13 @@ final class NativeOverlay {
     private String configName = "";
     private String waitingBind;
 
-    private JWindow tabletWindow;
-    private HudWindow hudWindow;
     private TabletPanel tabletPanel;
+    private volatile BufferedImage tabletFrame;
+    private Timer frameTimer;
+    private boolean tabletMouseDown;
+    private boolean hudMouseDown;
+    private final MinecraftOverlayTexture tabletTexture = new MinecraftOverlayTexture("tablet");
+    private final MinecraftOverlayTexture hudTexture = new MinecraftOverlayTexture("hud");
 
     private enum SettingType { SLIDER, DROPDOWN, CHECKBOX, COLOR, BIND, ACTION }
 
@@ -144,18 +152,18 @@ final class NativeOverlay {
         if (!tabletVisible) animationProgress = 0.0f;
         tabletVisible = true;
         closing = false;
-        focusRequested = true;
         updateWindowBounds(x, y, width, height);
-        SwingUtilities.invokeLater(() -> animateTablet(true));
+        SwingUtilities.invokeLater(() -> animateTablet(true, null));
     }
 
-    void hideTablet() {
+    void hideTablet(Runnable onHidden) {
         hudManager.setManualEditMode(false);
         if (!tabletVisible) {
             scheduleUpdate();
+            if (onHidden != null) onHidden.run();
             return;
         }
-        SwingUtilities.invokeLater(() -> animateTablet(false));
+        SwingUtilities.invokeLater(() -> animateTablet(false, onHidden));
     }
 
     void refreshHud() {
@@ -170,18 +178,181 @@ final class NativeOverlay {
         scheduleUpdate();
     }
 
+    void drawTablet(GuiGraphics graphics, int guiWidth, int guiHeight, int guiScale) {
+        if (!tabletVisible && !closing) return;
+        BufferedImage frame = tabletFrame;
+        if (frame == null) return;
+        double scale = tabletDisplayScale(guiWidth, guiHeight, guiScale);
+        int width = Math.max(1, (int) Math.round(frame.getWidth() / scale));
+        int height = Math.max(1, (int) Math.round(frame.getHeight() / scale));
+        tabletTexture.draw(graphics, frame, (guiWidth - width) / 2, (guiHeight - height) / 2, width, height);
+    }
+
+    void renderHud(GuiGraphics graphics) {
+        if (!hudManager.isEditing()
+                && (!hudManager.isModuleEnabled() || !hudManager.isConnected() || tabletVisible)) return;
+        var window = Minecraft.getInstance().getWindow();
+        int width = Math.max(1, window.getScreenWidth());
+        int height = Math.max(1, window.getScreenHeight());
+        BufferedImage frame = hudManager.renderFrame(width, height, "light".equals(themeId));
+        hudTexture.draw(graphics, frame, 0, 0, window.getGuiScaledWidth(), window.getGuiScaledHeight());
+    }
+
+    void mouseClicked(double mouseX, double mouseY, int button, int guiWidth, int guiHeight, int guiScale) {
+        double scale = tabletDisplayScale(guiWidth, guiHeight, guiScale);
+        int displayWidth = Math.max(1, (int) Math.round(tabletWidth / scale));
+        int displayHeight = Math.max(1, (int) Math.round(tabletHeight / scale));
+        int left = (guiWidth - displayWidth) / 2;
+        int top = (guiHeight - displayHeight) / 2;
+        if (mouseX >= left && mouseX < left + displayWidth && mouseY >= top && mouseY < top + displayHeight) {
+            tabletMouseDown = true;
+            dispatchPanelMouse(MouseEvent.MOUSE_PRESSED, (int) Math.round((mouseX - left) * scale),
+                    (int) Math.round((mouseY - top) * scale), button);
+        } else if (button == 0 && hudManager.isEditing()) {
+            int hudScale = Math.max(1, guiScale);
+            hudMouseDown = hudManager.beginDrag((int) Math.round(mouseX * hudScale), (int) Math.round(mouseY * hudScale));
+        }
+    }
+
+    void mouseDragged(double mouseX, double mouseY, int button, int guiWidth, int guiHeight, int guiScale) {
+        if (tabletMouseDown) {
+            double scale = tabletDisplayScale(guiWidth, guiHeight, guiScale);
+            int x = (int) Math.round((mouseX - (guiWidth - tabletWidth / scale) / 2.0) * scale);
+            int y = (int) Math.round((mouseY - (guiHeight - tabletHeight / scale) / 2.0) * scale);
+            dispatchPanelMouse(MouseEvent.MOUSE_DRAGGED, x, y, button);
+        } else if (hudMouseDown) {
+            int scale = Math.max(1, guiScale);
+            hudManager.dragTo((int) Math.round(mouseX * scale), (int) Math.round(mouseY * scale));
+        }
+    }
+
+    void mouseReleased(double mouseX, double mouseY, int button, int guiWidth, int guiHeight, int guiScale) {
+        if (tabletMouseDown) {
+            double scale = tabletDisplayScale(guiWidth, guiHeight, guiScale);
+            int x = (int) Math.round((mouseX - (guiWidth - tabletWidth / scale) / 2.0) * scale);
+            int y = (int) Math.round((mouseY - (guiHeight - tabletHeight / scale) / 2.0) * scale);
+            dispatchPanelMouse(MouseEvent.MOUSE_RELEASED, x, y, button);
+            tabletMouseDown = false;
+        }
+        if (hudMouseDown) {
+            hudManager.endDrag();
+            hudMouseDown = false;
+        }
+    }
+
+    void mouseMoved(double mouseX, double mouseY, int guiWidth, int guiHeight, int guiScale) {
+        double scale = tabletDisplayScale(guiWidth, guiHeight, guiScale);
+        int x = (int) Math.round((mouseX - (guiWidth - tabletWidth / scale) / 2.0) * scale);
+        int y = (int) Math.round((mouseY - (guiHeight - tabletHeight / scale) / 2.0) * scale);
+        dispatchPanelMouse(MouseEvent.MOUSE_MOVED, x, y, MouseEvent.NOBUTTON);
+    }
+
+    private double tabletDisplayScale(int guiWidth, int guiHeight, int guiScale) {
+        return Math.max(Math.max(1, guiScale), Math.max(
+                tabletWidth / (double) Math.max(1, guiWidth),
+                tabletHeight / (double) Math.max(1, guiHeight)
+        ));
+    }
+
+    void keyPressed(int key, int scancode, int modifiers) {
+        int keyCode = awtKeyCode(key, scancode);
+        if (keyCode == KeyEvent.VK_UNDEFINED) return;
+        int location = key == GLFW.GLFW_KEY_RIGHT_SHIFT ? KeyEvent.KEY_LOCATION_RIGHT : KeyEvent.KEY_LOCATION_STANDARD;
+        SwingUtilities.invokeLater(() -> {
+            if (tabletPanel == null) return;
+            KeyEvent event = new KeyEvent(tabletPanel, KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0,
+                    keyCode, KeyEvent.CHAR_UNDEFINED, location);
+            for (java.awt.event.KeyListener listener : tabletPanel.getKeyListeners()) listener.keyPressed(event);
+        });
+    }
+
+    void charTyped(int codepoint, int modifiers) {
+        char[] characters = Character.toChars(codepoint);
+        SwingUtilities.invokeLater(() -> {
+            if (tabletPanel == null) return;
+            for (char character : characters) {
+                KeyEvent event = new KeyEvent(tabletPanel, KeyEvent.KEY_TYPED, System.currentTimeMillis(), 0,
+                        KeyEvent.VK_UNDEFINED, character);
+                for (java.awt.event.KeyListener listener : tabletPanel.getKeyListeners()) listener.keyTyped(event);
+            }
+        });
+    }
+
+    private void dispatchPanelMouse(int id, int x, int y, int button) {
+        SwingUtilities.invokeLater(() -> {
+            if (tabletPanel == null) return;
+            int awtButton = id == MouseEvent.MOUSE_DRAGGED || id == MouseEvent.MOUSE_MOVED
+                    ? MouseEvent.NOBUTTON : awtMouseButton(button);
+            int modifiers = id == MouseEvent.MOUSE_DRAGGED && button == 0 ? InputEvent.BUTTON1_DOWN_MASK : 0;
+            MouseEvent event = new MouseEvent(tabletPanel, id, System.currentTimeMillis(), modifiers,
+                    x, y, 1, false, awtButton);
+            if (id == MouseEvent.MOUSE_PRESSED) {
+                for (java.awt.event.MouseListener listener : tabletPanel.getMouseListeners()) listener.mousePressed(event);
+            } else if (id == MouseEvent.MOUSE_RELEASED) {
+                for (java.awt.event.MouseListener listener : tabletPanel.getMouseListeners()) listener.mouseReleased(event);
+            } else if (id == MouseEvent.MOUSE_DRAGGED) {
+                for (java.awt.event.MouseMotionListener listener : tabletPanel.getMouseMotionListeners()) listener.mouseDragged(event);
+            } else if (id == MouseEvent.MOUSE_MOVED) {
+                for (java.awt.event.MouseMotionListener listener : tabletPanel.getMouseMotionListeners()) listener.mouseMoved(event);
+            }
+        });
+    }
+
+    private static int awtMouseButton(int button) {
+        return switch (button) {
+            case GLFW.GLFW_MOUSE_BUTTON_LEFT -> MouseEvent.BUTTON1;
+            case GLFW.GLFW_MOUSE_BUTTON_RIGHT -> MouseEvent.BUTTON3;
+            case GLFW.GLFW_MOUSE_BUTTON_MIDDLE -> MouseEvent.BUTTON2;
+            default -> MouseEvent.NOBUTTON;
+        };
+    }
+
+    private static int awtKeyCode(int key, int scancode) {
+        if ((key >= GLFW.GLFW_KEY_A && key <= GLFW.GLFW_KEY_Z)
+                || (key >= GLFW.GLFW_KEY_0 && key <= GLFW.GLFW_KEY_9)) return key;
+        if (key >= GLFW.GLFW_KEY_F1 && key <= GLFW.GLFW_KEY_F12) return KeyEvent.VK_F1 + key - GLFW.GLFW_KEY_F1;
+        if (key >= GLFW.GLFW_KEY_KP_0 && key <= GLFW.GLFW_KEY_KP_9) return KeyEvent.VK_NUMPAD0 + key - GLFW.GLFW_KEY_KP_0;
+        return switch (key) {
+            case GLFW.GLFW_KEY_ESCAPE -> KeyEvent.VK_ESCAPE;
+            case GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> KeyEvent.VK_ENTER;
+            case GLFW.GLFW_KEY_BACKSPACE -> KeyEvent.VK_BACK_SPACE;
+            case GLFW.GLFW_KEY_TAB -> KeyEvent.VK_TAB;
+            case GLFW.GLFW_KEY_SPACE -> KeyEvent.VK_SPACE;
+            case GLFW.GLFW_KEY_DELETE -> KeyEvent.VK_DELETE;
+            case GLFW.GLFW_KEY_INSERT -> KeyEvent.VK_INSERT;
+            case GLFW.GLFW_KEY_HOME -> KeyEvent.VK_HOME;
+            case GLFW.GLFW_KEY_END -> KeyEvent.VK_END;
+            case GLFW.GLFW_KEY_PAGE_UP -> KeyEvent.VK_PAGE_UP;
+            case GLFW.GLFW_KEY_PAGE_DOWN -> KeyEvent.VK_PAGE_DOWN;
+            case GLFW.GLFW_KEY_LEFT -> KeyEvent.VK_LEFT;
+            case GLFW.GLFW_KEY_RIGHT -> KeyEvent.VK_RIGHT;
+            case GLFW.GLFW_KEY_UP -> KeyEvent.VK_UP;
+            case GLFW.GLFW_KEY_DOWN -> KeyEvent.VK_DOWN;
+            case GLFW.GLFW_KEY_LEFT_SHIFT, GLFW.GLFW_KEY_RIGHT_SHIFT -> KeyEvent.VK_SHIFT;
+            case GLFW.GLFW_KEY_LEFT_CONTROL, GLFW.GLFW_KEY_RIGHT_CONTROL -> KeyEvent.VK_CONTROL;
+            case GLFW.GLFW_KEY_LEFT_ALT, GLFW.GLFW_KEY_RIGHT_ALT -> KeyEvent.VK_ALT;
+            case GLFW.GLFW_KEY_LEFT_SUPER, GLFW.GLFW_KEY_RIGHT_SUPER -> KeyEvent.VK_META;
+            default -> {
+                String name = GLFW.glfwGetKeyName(key, scancode);
+                yield name != null && name.length() == 1
+                        ? KeyEvent.getExtendedKeyCodeForChar(Character.toUpperCase(name.charAt(0)))
+                        : KeyEvent.VK_UNDEFINED;
+            }
+        };
+    }
+
     private void scheduleUpdate() {
         if (disposed || !updatePending.compareAndSet(false, true)) return;
         SwingUtilities.invokeLater(() -> {
             updatePending.set(false);
             if (disposed) return;
-            ensureWindows();
+            ensurePanel();
             applyWindowState();
         });
     }
 
-    private void ensureWindows() {
-        if (tabletWindow != null) return;
+    private void ensurePanel() {
+        if (tabletPanel != null) return;
         try {
             UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName());
         } catch (Exception ignored) {
@@ -189,25 +360,20 @@ final class NativeOverlay {
         }
         tabletPanel = new TabletPanel();
         tabletPanel.setPreferredSize(new Dimension(tabletWidth, tabletHeight));
-        tabletWindow = new JWindow();
-        configureWindow(tabletWindow, true);
-        tabletWindow.setContentPane(tabletPanel);
-        tabletWindow.pack();
-
-        hudWindow = new HudWindow(hudManager);
+        tabletPanel.setSize(tabletWidth, tabletHeight);
     }
 
-    private static void configureWindow(JWindow window, boolean focusable) {
-        window.setAlwaysOnTop(true);
-        window.setFocusableWindowState(focusable);
-        try {
-            window.setBackground(new Color(0, 0, 0, 0));
-        } catch (UnsupportedOperationException ignored) {
-            window.setBackground(new Color(12, 14, 22));
-        }
+    private void captureTabletFrame() {
+        if (disposed || tabletPanel == null || (!tabletVisible && !closing)) return;
+        BufferedImage frame = new BufferedImage(tabletWidth, tabletHeight, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = frame.createGraphics();
+        tabletPanel.setSize(tabletWidth, tabletHeight);
+        tabletPanel.paint(graphics);
+        graphics.dispose();
+        tabletFrame = frame;
     }
 
-    private void animateTablet(boolean opening) {
+    private void animateTablet(boolean opening, Runnable onFinished) {
         if (disposed) return;
         if (animationTimer != null) animationTimer.stop();
         closing = !opening;
@@ -224,7 +390,10 @@ final class NativeOverlay {
                 animationTimer = null;
                 animationProgress = to;
                 closing = false;
-                if (!opening) tabletVisible = false;
+                if (!opening) {
+                    tabletVisible = false;
+                    if (onFinished != null) onFinished.run();
+                }
                 applyWindowState();
             }
         });
@@ -233,23 +402,20 @@ final class NativeOverlay {
     }
 
     private void applyWindowState() {
-        if (tabletWindow == null || hudWindow == null) return;
-        tabletWindow.setBounds(gameX + (gameWidth - tabletWidth) / 2, gameY + (gameHeight - tabletHeight) / 2,
-                tabletWidth, tabletHeight);
-        hudWindow.update(gameX, gameY, gameWidth, gameHeight, "light".equals(themeId));
+        if (tabletPanel == null) return;
+        tabletPanel.setPreferredSize(new Dimension(tabletWidth, tabletHeight));
+        tabletPanel.setSize(tabletWidth, tabletHeight);
         tabletPanel.repaint();
-        if (tabletVisible) {
-            if (!tabletWindow.isVisible()) tabletWindow.setVisible(true);
-            if (focusRequested) {
-                focusRequested = false;
-                tabletWindow.toFront();
-                tabletPanel.requestFocusInWindow();
+        if (tabletVisible || closing) {
+            if (frameTimer == null) {
+                frameTimer = new Timer(33, event -> captureTabletFrame());
+                frameTimer.start();
             }
-        } else if (tabletWindow.isVisible()) {
-            tabletWindow.setVisible(false);
+            captureTabletFrame();
+        } else if (frameTimer != null) {
+            frameTimer.stop();
+            frameTimer = null;
         }
-        hudWindow.setVisible(hudManager.isEditing()
-                || (hudManager.isModuleEnabled() && hudManager.isConnected() && !tabletVisible));
     }
 
     private void persist() {
@@ -426,7 +592,7 @@ final class NativeOverlay {
         tabletHeight = Math.max(MIN_HEIGHT, Math.min(960, height));
         if (tabletPanel != null) {
             tabletPanel.setPreferredSize(new Dimension(tabletWidth, tabletHeight));
-            tabletWindow.setSize(tabletWidth, tabletHeight);
+            tabletPanel.setSize(tabletWidth, tabletHeight);
         }
         if (save) persist();
         scheduleUpdate();
@@ -434,6 +600,8 @@ final class NativeOverlay {
 
     void dispose() {
         disposed = true;
+        tabletTexture.close();
+        hudTexture.close();
         SwingUtilities.invokeLater(() -> {
             if (animationTimer != null) {
                 animationTimer.stop();
@@ -443,17 +611,14 @@ final class NativeOverlay {
                 contentAnimationTimer.stop();
                 contentAnimationTimer = null;
             }
+            if (frameTimer != null) {
+                frameTimer.stop();
+                frameTimer = null;
+            }
             moduleAnimationTimers.values().forEach(Timer::stop);
             moduleAnimationTimers.clear();
-            if (tabletWindow != null) {
-                tabletWindow.dispose();
-                tabletWindow = null;
-            }
-            if (hudWindow != null) {
-                hudWindow.dispose();
-                hudWindow = null;
-            }
             tabletPanel = null;
+            tabletFrame = null;
         });
     }
 

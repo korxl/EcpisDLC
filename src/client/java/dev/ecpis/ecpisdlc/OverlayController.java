@@ -27,7 +27,7 @@ final class OverlayController {
         }
 
         Window window = client.getWindow();
-        inputScreen = new OverlayInputScreen();
+        inputScreen = new OverlayInputScreen(overlay);
         open = true;
         client.setScreen(inputScreen);
         overlay.show(
@@ -41,18 +41,20 @@ final class OverlayController {
 
     void close(Minecraft client) {
         if (!open) {
-            overlay.hideTablet();
+            if (client.screen != inputScreen) overlay.hideTablet(null);
             return;
         }
 
         open = false;
-        overlay.hideTablet();
+        OverlayInputScreen closingScreen = inputScreen;
         long handle = client.getWindow().handle();
-        if (client.screen == inputScreen) {
-            GLFW.glfwFocusWindow(handle);
-            client.setScreen(null);
-        }
-        inputScreen = null;
+        overlay.hideTablet(() -> client.execute(() -> {
+            if (client.screen == closingScreen) {
+                GLFW.glfwFocusWindow(handle);
+                client.setScreen(null);
+            }
+            if (inputScreen == closingScreen) inputScreen = null;
+        }));
     }
 
     private void closeFromWindow() {
@@ -63,7 +65,7 @@ final class OverlayController {
         if (open && client.screen != inputScreen) {
             open = false;
             inputScreen = null;
-            overlay.hideTablet();
+            overlay.hideTablet(null);
         }
 
         Window window = client.getWindow();

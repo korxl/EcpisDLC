@@ -12,7 +12,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Optional;
 
-/** AWT-backed renderer used exclusively by the native OS-window HUD. */
+/** AWT-backed HUD renderer rasterized into Minecraft's in-game overlay. */
 public final class EcpisRenderer {
     private final Graphics2D graphics;
     private final Deque<Optional<Shape>> clips = new ArrayDeque<>();
