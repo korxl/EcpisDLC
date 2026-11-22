@@ -1200,7 +1200,7 @@ final class NativeOverlay {
                 if (event.getButton() == MouseEvent.BUTTON3 || clickedGear) {
                     selectedModule = selectedModule != null && selectedModule.equals(hit.id()) ? null : hit.id();
                 } else {
-                    setEnabled(hit.id(), !enabled.getOrDefault(hit.id(), false));
+                    NativeOverlay.this.setEnabled(hit.id(), !enabled.getOrDefault(hit.id(), false));
                 }
                 repaint(); return;
             }
