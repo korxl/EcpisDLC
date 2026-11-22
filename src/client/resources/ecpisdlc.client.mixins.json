@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "package": "dev.ecpis.ecpisdlc.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "LevelWeatherMixin",
+    "SkyRendererMixin",
+    "FogRendererMixin",
+    "CloudRendererMixin",
+    "ClientPlayerInteractionManagerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

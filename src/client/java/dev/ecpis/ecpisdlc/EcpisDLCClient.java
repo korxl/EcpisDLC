@@ -11,7 +11,8 @@ import net.minecraft.resources.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 public final class EcpisDLCClient implements ClientModInitializer {
-    private static final NativeOverlay OVERLAY = new NativeOverlay();
+    private static final HudManager HUD_MANAGER = new HudManager();
+    private static final NativeOverlay OVERLAY = new NativeOverlay(HUD_MANAGER);
     private static final ClientFeatures FEATURES = new ClientFeatures(OVERLAY);
     private static final OverlayController OVERLAY_CONTROLLER = new OverlayController(OVERLAY);
     private static KeyMapping openGuiKey;
@@ -33,7 +34,10 @@ public final class EcpisDLCClient implements ClientModInitializer {
                 OVERLAY_CONTROLLER.toggle(client);
             }
             OVERLAY_CONTROLLER.tick(client);
+            FEATURES.pollModuleBinds(client);
             FEATURES.tick(client);
+            HUD_MANAGER.tick(client);
+            OVERLAY.refreshHud();
         });
 
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
@@ -45,5 +49,10 @@ public final class EcpisDLCClient implements ClientModInitializer {
     static void closeOverlayFromWindow() {
         Minecraft client = Minecraft.getInstance();
         OVERLAY_CONTROLLER.close(client);
+    }
+
+    public static void onEntityAttack(net.minecraft.world.entity.player.Player attacker,
+                                      net.minecraft.world.entity.Entity target) {
+        HUD_MANAGER.onEntityAttack(attacker, target);
     }
 }
